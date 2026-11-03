@@ -106,6 +106,14 @@ else
 fi
 
 cd "$PROJECT_DIR"
+
+# Project Flutter tanpa folder android (belum pernah di-flutter create)? Buat scaffold-nya otomatis.
+if [ ! -f android/app/build.gradle ] && [ ! -f android/app/build.gradle.kts ]; then
+  echo "⚠ android/app/build.gradle tidak ada — membuat scaffold Android (flutter create)..."
+  PNAME="$(sed -n 's/^name:[[:space:]]*//p' pubspec.yaml | head -n1 | tr -d '\r"' | tr -d "'")"
+  flutter create --platforms=android --org com.rayz ${PNAME:+--project-name "$PNAME"} .
+fi
+
 flutter pub get
 
 FLAGS=(--"$BUILD_TYPE" --target-platform "$PLATFORMS" --no-pub)
