@@ -1,0 +1,104 @@
+name: build-flutter
+
+on:
+  workflow_dispatch:
+    inputs:
+      jobId:
+        description: "ID job dari bot"
+        required: true
+        type: string
+      userId:
+        description: "ID user (tidak dipakai)"
+        required: false
+        default: "0"
+        type: string
+      payload:
+        description: "JSON dari bot"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Baca payload
+        id: p
+        env:
+          PAYLOAD: ${{ inputs.payload }}
+        run: |
+          echo "$PAYLOAD" > payload.json
+          echo "mode=$(jq -r '.mode // "zip"' payload.json)" >> $GITHUB_OUTPUT
+          echo "url=$(jq -r '.url // ""' payload.json)" >> $GITHUB_OUTPUT
+          echo "tag=$(jq -r '.tag // ""' payload.json)" >> $GITHUB_OUTPUT
+          echo "build_type=$(jq -r '.buildType // "release"' payload.json)" >> $GITHUB_OUTPUT
+          echo "perf_mode=$(jq -r '.perfMode // "fast"' payload.json)" >> $GITHUB_OUTPUT
+          echo "engine=$(jq -r '.engine // "flutter"' payload.json)" >> $GITHUB_OUTPUT
+
+      - name: Mode tidak didukung
+        if: steps.p.outputs.mode != 'zip'
+        run: |
+          echo "::error::Mode '${{ steps.p.outputs.mode }}' (Web To APK) belum didukung workflow otomatis. Pakai Build APK dari ZIP."
+          exit 1
+
+      - name: Download source ZIP
+        id: src
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.p.outputs.tag }}
+          URL: ${{ steps.p.outputs.url }}
+        run: |
+          mkdir -p dl project
+          if [ -z "$TAG" ] || ! gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*.zip' --dir dl; then
+            curl -fL -H "Authorization: Bearer $GH_TOKEN" -o dl/source.zip "$URL"
+          fi
+          unzip -q dl/*.zip -d project
+          MARK=$(find project -maxdepth 3 -name pubspec.yaml | head -n1)
+          if [ -z "$MARK" ]; then MARK=$(find project -maxdepth 3 \( -name settings.gradle -o -name settings.gradle.kts \) | head -n1); fi
+          if [ -z "$MARK" ]; then echo "::error::pubspec.yaml / settings.gradle tidak ditemukan di ZIP"; exit 1; fi
+          echo "dir=$(dirname "$MARK")" >> $GITHUB_OUTPUT
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: subosito/flutter-action@v2
+        if: steps.p.outputs.engine != 'native'
+        with:
+          channel: stable
+          cache: true
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      - name: Flutter pub get
+        if: steps.p.outputs.engine != 'native'
+        working-directory: ${{ steps.src.outputs.dir }}
+        run: flutter pub get
+
+      - name: Build APK
+        id: build
+        env:
+          BUILD_TYPE: ${{ steps.p.outputs.build_type }}
+          PERF_MODE: ${{ steps.p.outputs.perf_mode }}
+          ENGINE: ${{ steps.p.outputs.engine }}
+          PROJECT_DIR: ${{ steps.src.outputs.dir }}
+        run: bash scripts/build-profile.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk-${{ inputs.jobId }}
+          path: ${{ steps.build.outputs.apk_path }}
+          if-no-files-found: error
+          retention-days: 3
